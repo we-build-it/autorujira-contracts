@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "lldb",
+        "request": "launch",
+        "name": "Debug Contracts in autoclaimer-v1",
+        "cwd": "${workspaceFolder}/autoclaimer-v1",
+        "cargo": {
+          "args": [
+            "test",
+            "--no-run",
+            "--lib",
+            "--manifest-path",
+            "${workspaceFolder}/autoclaimer-v1/Cargo.toml"
+          ]
+        }, 
+        "args": [],
+        "preLaunchTask": "cargo build",
+        "sourceLanguages": ["rust"]
+      }
+    ]
+  }
+  
