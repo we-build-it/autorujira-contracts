@@ -4,7 +4,7 @@ use crate::msg::{
     InstantiateMsg, ProtocolConfig, ProtocolSubscriptionData, QueryMsg, UpdateConfigMsg,
 };
 use crate::state::{
-    Config, ExecutionData, CONFIG, PENDING_USER_PROTOCOL, PROTOCOL_CONFIG, SUBSCRIPTIONS,
+    ExecutionData, CONFIG, PENDING_USER_PROTOCOL, PROTOCOL_CONFIG, SUBSCRIPTIONS,
     USER_EXECUTION_DATA,
 };
 use common::claim::build_claim_msg;
@@ -112,12 +112,7 @@ pub fn update_config(
 /// # Returns:
 /// A `StdResult<Response>` indicating success or failure of the migration.
 #[entry_point]
-pub fn migrate(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> {
-    let config = Config {
-        owner: info.sender.clone(), // Asigna el valor del propietario
-        max_parallel_claims: 39,    // Asigna el valor máximo de reclamos paralelos
-    };
-    CONFIG.save(deps.storage, &config)?;
+pub fn migrate(_deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> {
     Ok(Response::new()
         .add_attribute("action", "migrate")
         .add_attribute("sender", info.sender)
