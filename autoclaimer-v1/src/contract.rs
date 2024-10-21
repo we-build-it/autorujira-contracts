@@ -1,44 +1,31 @@
 use crate::error::ContractError;
 use crate::msg::{
-    ConfigMsg, ConfigResponse, ExecuteMsg, GetSubscribedProtocolsResponse,
-    GetSubscriptionsResponse, ProtocolConfig, ProtocolSubscriptionData, QueryMsg,
+    ConfigResponse, ExecuteMsg, GetSubscribedProtocolsResponse, GetSubscriptionsResponse,
+    InstantiateMsg, ProtocolConfig, ProtocolSubscriptionData, QueryMsg, UpdateConfigMsg,
 };
 use crate::state::{
-    ExecutionData, CONFIG, MAX_PARALLEL_CLAIMS_STORAGE, OWNER, PENDING_USER_PROTOCOL,
-    SUBSCRIPTIONS, USER_EXECUTION_DATA,
+    Config, ExecutionData, CONFIG, PENDING_USER_PROTOCOL, PROTOCOL_CONFIG, SUBSCRIPTIONS,
+    USER_EXECUTION_DATA,
 };
 use common::claim::build_claim_msg;
 use common::common_functions::query_token_balance;
 use common::stake::build_stake_msg;
 use cosmwasm_std::{
-    entry_point, to_json_binary, Addr, Binary, Deps, DepsMut, Env, Event, MessageInfo, Reply,
-    Response, StdResult, SubMsg,
+    ensure, entry_point, to_json_binary, Addr, Binary, Deps, DepsMut, Env, Event, MessageInfo,
+    Reply, Response, StdResult, SubMsg,
 };
+use cw_utils::nonpayable;
 
 const CLAIM_REPLY_ID_BASE: u64 = 100;
-const MAX_PARALLEL_CLAIMS: usize = 40;
 const FEE_DIVISOR: u128 = 1_000_000_000_000_000_000u128;
 
-/// Checks if the sender is the owner of the contract.
-/// If the owner has not been set yet (e.g., during `instantiate`), it returns `Ok()`.
-///
-/// # Arguments:
-/// * `deps` - Dependency injection for accessing state.
-/// * `sender` - The address of the sender who initiated the action.
-///
-/// # Returns:
-/// A `Result<(), ContractError>` indicating success if the sender is the owner or if no owner has been set yet.
-fn check_is_owner(deps: Deps, sender: &Addr) -> Result<(), ContractError> {
-    match OWNER.may_load(deps.storage)? {
-        Some(owner) => {
-            // If the owner is set, verify that the sender is the owner
-            if sender != &owner {
-                return Err(ContractError::Unauthorized {});
-            }
-        }
-        None => {
-            // If no owner is set yet, assume this is the first call (e.g., during instantiate), so return Ok
-            return Ok(());
+/// Helper function to validate protocols
+fn validate_protocols(deps: &DepsMut, protocols: &Vec<String>) -> Result<(), ContractError> {
+    for protocol in protocols {
+        if PROTOCOL_CONFIG.may_load(deps.storage, protocol)?.is_none() {
+            return Err(ContractError::InvalidProtocol {
+                protocol: protocol.clone(),
+            });
         }
     }
     Ok(())
@@ -60,13 +47,14 @@ pub fn instantiate(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    msg: ConfigMsg,
+    msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    // Ensure that the owner is provided in the instantiate message
-    if msg.owner.is_none() {
-        return Err(ContractError::NoOwner {});
-    }
-    update_config(deps, env, info, msg)?;
+    let update_msg = UpdateConfigMsg {
+        owner: Some(msg.owner),
+        max_parallel_claims: Some(msg.max_parallel_claims),
+        protocol_configs: Some(msg.protocol_configs),
+    };
+    update_config(deps, env, info, update_msg)?;
     Ok(Response::new().add_attribute("action", "instantiate"))
 }
 
@@ -84,23 +72,31 @@ pub fn instantiate(
 pub fn update_config(
     deps: DepsMut,
     _env: Env,
-    _info: MessageInfo,
-    msg: ConfigMsg,
+    info: MessageInfo,
+    msg: UpdateConfigMsg,
 ) -> Result<Response, ContractError> {
-    // Update the owner if provided (this is where the owner is stored)
+    let mut config = CONFIG.load(deps.storage)?;
+    ensure!(config.owner == info.sender, ContractError::Unauthorized {});
+    // Update the owner if provided
     if let Some(owner) = msg.owner {
-        OWNER.save(deps.storage, &owner)?;
+        config.owner = owner;
     }
 
-    let max_parallel_claims = msg.max_parallel_claims.unwrap_or(MAX_PARALLEL_CLAIMS as u8);
-    MAX_PARALLEL_CLAIMS_STORAGE.save(deps.storage, &max_parallel_claims)?;
+    // Update the max parallel claims if provided
+    if let Some(max_parallel_claims) = msg.max_parallel_claims {
+        config.max_parallel_claims = max_parallel_claims;
+    }
 
-    for protocol_config in msg.protocol_configs {
-        CONFIG.save(
-            deps.storage,
-            protocol_config.protocol.as_str(),
-            &protocol_config,
-        )?;
+    CONFIG.save(deps.storage, &config)?;
+
+    if let Some(protocol_configs) = msg.protocol_configs {
+        for protocol_config in protocol_configs {
+            PROTOCOL_CONFIG.save(
+                deps.storage,
+                protocol_config.protocol.as_str(),
+                &protocol_config,
+            )?;
+        }
     }
 
     Ok(Response::new().add_attribute("action", "update_config"))
@@ -117,7 +113,11 @@ pub fn update_config(
 /// A `StdResult<Response>` indicating success or failure of the migration.
 #[entry_point]
 pub fn migrate(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> {
-    OWNER.save(deps.storage, &info.sender)?;
+    let config = Config {
+        owner: info.sender.clone(), // Asigna el valor del propietario
+        max_parallel_claims: 39,    // Asigna el valor máximo de reclamos paralelos
+    };
+    CONFIG.save(deps.storage, &config)?;
     Ok(Response::new()
         .add_attribute("action", "migrate")
         .add_attribute("sender", info.sender)
@@ -142,29 +142,17 @@ pub fn execute(
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
+    nonpayable(&info).map_err(|_| ContractError::GenericError {
+        msg: "Don't send funds to this function!".to_string(),
+    })?;
     match msg {
         ExecuteMsg::UpdateConfig {
-            owner,
-            max_parallel_claims,
-            protocol_configs,
-        } => {
-            check_is_owner(deps.as_ref(), &info.sender)?;
-            update_config(
-                deps,
-                env,
-                info,
-                ConfigMsg {
-                    owner,
-                    max_parallel_claims,
-                    protocol_configs,
-                },
-            )
-        }
+            config: update_config_msg,
+        } => update_config(deps, env, info, update_config_msg),
         ExecuteMsg::ClaimAndStake { users_protocols } => {
-            check_is_owner(deps.as_ref(), &info.sender)?;
-            let max_parallel_claims = MAX_PARALLEL_CLAIMS_STORAGE
-                .may_load(deps.storage)?
-                .unwrap_or(MAX_PARALLEL_CLAIMS as u8);
+            let config = CONFIG.load(deps.storage)?;
+            ensure!(config.owner == info.sender, ContractError::Unauthorized {});
+
             let mut total_protocol_count = 0;
             let users_protocols: Vec<(Addr, Vec<String>)> = users_protocols
                 .into_iter()
@@ -174,20 +162,22 @@ pub fn execute(
                     Ok((user_addr, protocols))
                 })
                 .collect::<Result<Vec<(Addr, Vec<String>)>, ContractError>>()?;
-
             // Validation: Check the total number of protocols to process
-            if total_protocol_count > max_parallel_claims as usize {
+            if total_protocol_count > config.max_parallel_claims as usize {
                 return Err(ContractError::TooManyMessages {
-                    max_allowed: max_parallel_claims as usize,
+                    max_allowed: config.max_parallel_claims as usize,
                 });
             }
+
             execute_claim_and_stake(deps, env, users_protocols)
         }
         ExecuteMsg::Subscribe { protocols } => {
+            validate_protocols(&deps, &protocols)?;
             let user = info.sender;
             subscribe(deps, user, protocols)
         }
         ExecuteMsg::Unsubscribe { protocols } => {
+            validate_protocols(&deps, &protocols)?;
             let user = info.sender;
             unsubscribe(deps, user, protocols)
         }
@@ -225,7 +215,7 @@ pub fn execute_claim_and_stake(
                 continue;
             }
 
-            let protocol_config = CONFIG.may_load(deps.storage, &protocol)?.ok_or(
+            let protocol_config = PROTOCOL_CONFIG.may_load(deps.storage, &protocol)?.ok_or(
                 ContractError::InvalidProtocol {
                     protocol: protocol.to_string(),
                 },
@@ -291,12 +281,11 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
         .may_load(deps.storage, msg.id)
         .unwrap_or_default()
     {
-        let protocol_config =
-            CONFIG
-                .may_load(deps.storage, &protocol)?
-                .ok_or(ContractError::InvalidProtocol {
-                    protocol: protocol.to_string(),
-                })?;
+        let protocol_config = PROTOCOL_CONFIG.may_load(deps.storage, &protocol)?.ok_or(
+            ContractError::InvalidProtocol {
+                protocol: protocol.to_string(),
+            },
+        )?;
 
         let balance_after =
             query_token_balance(deps.as_ref(), &user, protocol_config.reward_denom.clone())?;
@@ -333,7 +322,9 @@ pub fn reply(deps: DepsMut, env: Env, msg: Reply) -> Result<Response, ContractEr
         // TODO build fee send msg if fee_amount > 0
 
         let event = Event::new("claim_and_stake")
+            .add_attribute("protocol", protocol.to_string())
             .add_attribute("address", user.to_string())
+            .add_attribute("token", protocol_config.reward_denom.clone().to_string())
             .add_attribute("claimed", amount_claimed.to_string())
             .add_attribute("fee", fee_amount.to_string())
             .add_attribute("staked", stake_amount.to_string())
@@ -495,18 +486,15 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 /// # Returns:
 /// A `StdResult<ConfigResponse>` containing the protocol configurations.
 fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
-    let max_parallel_claims = MAX_PARALLEL_CLAIMS_STORAGE
-        .may_load(deps.storage)?
-        .unwrap_or(MAX_PARALLEL_CLAIMS as u8);
-
-    let configs: Vec<ProtocolConfig> = CONFIG
+    let config = CONFIG.load(deps.storage)?;
+    let protocol_configs: Vec<ProtocolConfig> = PROTOCOL_CONFIG
         .range(deps.storage, None, None, cosmwasm_std::Order::Ascending)
         .map(|item| item.map(|(_, config)| config))
         .collect::<StdResult<Vec<ProtocolConfig>>>()?;
 
     Ok(ConfigResponse {
-        owner: OWNER.may_load(deps.storage)?,
-        max_parallel_claims: Some(max_parallel_claims),
-        protocol_configs: configs,
+        owner: config.owner,
+        max_parallel_claims: config.max_parallel_claims,
+        protocol_configs,
     })
 }

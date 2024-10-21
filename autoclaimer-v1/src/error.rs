@@ -8,6 +8,9 @@ pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
 
+    #[error("Generic error: {msg}")]
+    GenericError { msg: String },
+
     #[error("Owner should be specified")]
     NoOwner,
 
@@ -20,7 +23,6 @@ pub enum ContractError {
     #[error("Invalid reply ID: {id}")]
     InvalidReplyId { id: u64 },
 
-    // Agrega otros errores personalizados si es necesario
     #[error("Serialization error: {0}")]
     SerializationError(String), // Nuevo error para manejo de serialización
 
@@ -31,7 +33,7 @@ pub enum ContractError {
     InvalidProtocol { protocol: String },
 }
 
-// Implementación de From<serde_json::Error> para ContractError
+// From<serde_json::Error> impl for ContractError
 impl From<SerdeError> for ContractError {
     fn from(e: SerdeError) -> Self {
         ContractError::SerializationError(e.to_string())
