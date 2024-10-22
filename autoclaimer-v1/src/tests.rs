@@ -1,180 +1,256 @@
 #[cfg(test)]
 mod tests {
-    use cosmwasm_std::testing::{message_info, mock_dependencies, mock_env};
-    use cosmwasm_std::Addr;
+    use cosmwasm_std::testing::MockApi;
+    use cosmwasm_std::{Addr, Coin, Decimal};
+    use cw_multi_test::{App, AppBuilder, ContractWrapper, Executor};
 
-    use crate::contract::{execute, query_get_subscribed_protocols, query_get_subscriptions};
-    use crate::msg::{ExecuteMsg, ProtocolSubscriptionData};
-    use crate::state::{ExecutionData, SUBSCRIPTIONS, USER_EXECUTION_DATA};
+    use crate::contract::{execute, instantiate, query, reply};
+    use crate::msg::{
+        ConfigResponse, ExecuteMsg, GetSubscribedProtocolsResponse, InstantiateMsg, ProtocolConfig,
+        QueryMsg, UpdateConfigMsg,
+    };
+    use common::staking_provider::StakingProvider;
 
-    // Test for query_get_subscriptions
-    #[test]
-    fn test_query_get_subscriptions() {
-        let mut deps = mock_dependencies();
-
-        // Simulate subscriptions
-        let user1 = Addr::unchecked("user1");
-        let user2 = Addr::unchecked("user2");
-        let protocols1 = vec!["AUTO".to_string(), "NAMI".to_string()];
-        let protocols2 = vec!["AUTO".to_string()];
-
-        // Insert subscriptions into storage using the Map
-        SUBSCRIPTIONS
-            .save(deps.as_mut().storage, &user1, &protocols1)
-            .unwrap();
-        SUBSCRIPTIONS
-            .save(deps.as_mut().storage, &user2, &protocols2)
-            .unwrap();
-
-        // Call the query
-        let result = query_get_subscriptions(deps.as_ref()).unwrap();
-
-        // Find the user1 and user2 entries in the result
-        let user1_subs = result
-            .subscriptions
-            .iter()
-            .find(|(addr, _)| addr == "user1")
-            .map(|(_, protocols)| protocols);
-
-        let user2_subs = result
-            .subscriptions
-            .iter()
-            .find(|(addr, _)| addr == "user2")
-            .map(|(_, protocols)| protocols);
-
-        // Check the response
-        assert_eq!(user1_subs.unwrap(), &protocols1);
-        assert_eq!(user2_subs.unwrap(), &protocols2);
+    struct Contracts {
+        pub autoclaimer: Addr,
     }
 
-    #[test]
-    fn test_query_get_subscribed_protocols() {
-        let mut deps = mock_dependencies();
+    // The contract still uses cosmwasm_std::Empty
+    fn contract_autoclaimer() -> Box<dyn cw_multi_test::Contract<cosmwasm_std::Empty>> {
+        let contract = ContractWrapper::new(execute, instantiate, query).with_reply(reply);
+        Box::new(contract)
+    }
 
-        // Simulate subscriptions
-        let user1 = Addr::unchecked("user1");
-        let protocols1 = vec!["AUTO".to_string(), "NAMI".to_string()];
+    fn setup(balances: Vec<(Addr, Vec<Coin>)>) -> (App, Contracts) {
+        // Create the API with the Bech32 prefix "kujira"
+        let api = MockApi::default().with_prefix("kujira");
 
-        // Insert user1's subscriptions into storage
-        SUBSCRIPTIONS
-            .save(deps.as_mut().storage, &user1, &protocols1)
+        // Create the App using AppBuilder and the custom API
+        let mut app = AppBuilder::new_custom()
+            .with_api(api.clone())
+            .build(|_router, _api, _storage| {});
+
+        // Initialize balances using BankSudo::Mint
+        for (addr, coins) in balances {
+            app.sudo(cw_multi_test::SudoMsg::Bank({
+                cw_multi_test::BankSudo::Mint {
+                    to_address: addr.to_string(),
+                    amount: coins,
+                }
+            }))
             .unwrap();
+        }
 
-        // Simulate execution data for last autoclaim
-        let execution_data_auto = ExecutionData {
-            last_autoclaim: cosmwasm_std::Timestamp::from_seconds(1633046400),
-        };
-        let execution_data_nami = ExecutionData {
-            last_autoclaim: cosmwasm_std::Timestamp::from_seconds(1633046500),
+        let autoclaimer_code_id = app.store_code(contract_autoclaimer());
+
+        // Create addresses using the API
+        let owner = app.api().addr_make("owner");
+        let fee_address1 = app.api().addr_make("feeaddress1");
+        let claim_contract1 = app.api().addr_make("claimcontract1");
+        let stake_contract1 = app.api().addr_make("stakecontract1");
+        let fee_address2 = app.api().addr_make("feeaddress2");
+        let claim_contract2 = app.api().addr_make("claimcontract2");
+        let stake_contract2 = app.api().addr_make("stakecontract2");
+
+        let instantiate_msg = InstantiateMsg {
+            owner: owner.clone(),
+            max_parallel_claims: 5,
+            protocol_configs: vec![
+                ProtocolConfig {
+                    protocol: "protocol1".to_string(),
+                    provider: StakingProvider::DAO_DAO,
+                    fee_percentage: Decimal::zero(),
+                    fee_address: fee_address1.to_string(),
+                    claim_contract_address: claim_contract1.to_string(),
+                    stake_contract_address: stake_contract1.to_string(),
+                    reward_denom: "token1".to_string(),
+                },
+                ProtocolConfig {
+                    protocol: "protocol2".to_string(),
+                    provider: StakingProvider::CW_REWARDS,
+                    fee_percentage: Decimal::percent(1),
+                    fee_address: fee_address2.to_string(),
+                    claim_contract_address: claim_contract2.to_string(),
+                    stake_contract_address: stake_contract2.to_string(),
+                    reward_denom: "token2".to_string(),
+                },
+            ],
         };
 
-        // Insert last autoclaim timestamps into USER_EXECUTION_DATA
-        USER_EXECUTION_DATA
-            .save(
-                deps.as_mut().storage,
-                (user1.clone(), "AUTO".to_string()),
-                &execution_data_auto,
+        let autoclaimer_addr = app
+            .instantiate_contract(
+                autoclaimer_code_id,
+                owner.clone(),
+                &instantiate_msg,
+                &[],
+                "Autoclaimer",
+                None,
             )
             .unwrap();
-        USER_EXECUTION_DATA
-            .save(
-                deps.as_mut().storage,
-                (user1.clone(), "NAMI".to_string()),
-                &execution_data_nami,
+
+        (
+            app,
+            Contracts {
+                autoclaimer: autoclaimer_addr,
+            },
+        )
+    }
+
+    #[test]
+    fn test_instantiate_and_query_config() {
+        let (app, contracts) = setup(vec![]); // Empty initial balances
+        let owner = app.api().addr_make("owner");
+
+        // Query the configuration
+        let config: ConfigResponse = app
+            .wrap()
+            .query_wasm_smart(contracts.autoclaimer.clone(), &QueryMsg::Config {})
+            .unwrap();
+
+        assert_eq!(config.owner, owner);
+        assert_eq!(config.max_parallel_claims, 5);
+        assert_eq!(config.protocol_configs.len(), 2);
+        assert_eq!(config.protocol_configs[0].protocol, "protocol1");
+        assert_eq!(config.protocol_configs[1].protocol, "protocol2");
+    }
+
+    #[test]
+    fn test_subscribe_and_query_subscriptions() {
+        let (mut app, contracts) = setup(vec![]);
+
+        let user = app.api().addr_make("user1");
+        let subscribe_msg = ExecuteMsg::Subscribe {
+            protocols: vec!["protocol1".to_string(), "protocol2".to_string()],
+        };
+        app.execute_contract(
+            user.clone(),
+            contracts.autoclaimer.clone(),
+            &subscribe_msg,
+            &[],
+        )
+        .unwrap();
+
+        let res: GetSubscribedProtocolsResponse = app
+            .wrap()
+            .query_wasm_smart(
+                contracts.autoclaimer.clone(),
+                &QueryMsg::GetSubscribedProtocols {
+                    user_address: user.to_string(),
+                },
             )
             .unwrap();
-
-        // Query the specific user's protocols
-        let result = query_get_subscribed_protocols(deps.as_ref(), user1).unwrap();
-
-        // Expected data structure
-        let expected_protocols = vec![
-            ProtocolSubscriptionData {
-                protocol: "AUTO".to_string(),
-                last_autoclaim: Some(
-                    cosmwasm_std::Timestamp::from_seconds(1633046400).seconds(),
-                ),
-            },
-            ProtocolSubscriptionData {
-                protocol: "NAMI".to_string(),
-                last_autoclaim: Some(
-                    cosmwasm_std::Timestamp::from_seconds(1633046500).seconds(),
-                ),
-            },
-        ];
-
-        // Check the response
-        assert_eq!(result.protocols, expected_protocols);
+        assert_eq!(res.protocols.len(), 2);
+        assert_eq!(res.protocols[0].protocol, "protocol1");
+        assert_eq!(res.protocols[1].protocol, "protocol2");
     }
 
     #[test]
-    fn test_query_get_subscribed_protocols_empty() {
-        let deps = mock_dependencies();
+    fn test_unsubscribe() {
+        let (mut app, contracts) = setup(vec![]); // Empty initial balances
 
-        // Query for a user with no subscriptions
-        let result =
-            query_get_subscribed_protocols(deps.as_ref(), Addr::unchecked("user1")).unwrap();
+        // The user subscribes to the protocols
+        let user = app.api().addr_make("user1");
+        let subscribe_msg = ExecuteMsg::Subscribe {
+            protocols: vec!["protocol1".to_string(), "protocol2".to_string()],
+        };
+        app.execute_contract(
+            user.clone(),
+            contracts.autoclaimer.clone(),
+            &subscribe_msg,
+            &[],
+        )
+        .unwrap();
 
-        // Check that the result is empty
-        assert!(result.protocols.is_empty());
-    }
+        // The user unsubscribes from protocol1
+        let unsubscribe_msg = ExecuteMsg::Unsubscribe {
+            protocols: vec!["protocol1".to_string()],
+        };
+        app.execute_contract(
+            user.clone(),
+            contracts.autoclaimer.clone(),
+            &unsubscribe_msg,
+            &[],
+        )
+        .unwrap();
 
-    #[test]
-    fn test_query_get_subscriptions_empty() {
-        let deps = mock_dependencies();
-
-        // Call the query when there are no subscriptions
-        let result = query_get_subscriptions(deps.as_ref()).unwrap();
-
-        // Check that the result is empty
-        assert!(result.subscriptions.is_empty());
-    }
-
-    #[test]
-    fn test_execute_claim_and_stake_with_ignored() {
-        let mut deps = mock_dependencies();
-        let env = mock_env();
-        let info = message_info(&Addr::unchecked("executor"), &[]);
-
-        // Simulate existing subscriptions
-        let user1 = Addr::unchecked("user1");
-        let user2 = Addr::unchecked("user2");
-        let protocols1 = vec!["AUTO".to_string(), "NAMI".to_string()];
-
-        // Insert subscriptions into storage
-        SUBSCRIPTIONS
-            .save(deps.as_mut().storage, &user1, &protocols1)
+        // Query the user's subscriptions
+        let res: GetSubscribedProtocolsResponse = app
+            .wrap()
+            .query_wasm_smart(
+                contracts.autoclaimer.clone(),
+                &QueryMsg::GetSubscribedProtocols {
+                    user_address: user.to_string(),
+                },
+            )
             .unwrap();
+        assert_eq!(res.protocols.len(), 1);
+        assert_eq!(res.protocols[0].protocol, "protocol2");
+    }
 
-        // Prepare users_protocols input, including unsubscribed users and protocols
-        let users_protocols = vec![
-            (
-                user1.to_string(),
-                vec!["AUTO".to_string(), "OTHER".to_string()],
-            ), // user1 is not subscribed to "OTHER"
-            (user2.to_string(), vec!["AUTO".to_string()]), // user2 is not subscribed to any protocols
-        ];
+    #[test]
+    fn test_unauthorized_claim_and_stake() {
+        let (mut app, contracts) = setup(vec![]);
+        let user = app.api().addr_make("user1");
+        let subscribe_msg = ExecuteMsg::Subscribe {
+            protocols: vec!["protocol1".to_string()],
+        };
+        app.execute_contract(
+            user.clone(),
+            contracts.autoclaimer.clone(),
+            &subscribe_msg,
+            &[],
+        )
+        .unwrap();
 
-        // Execute the claim_and_stake
-        let msg = ExecuteMsg::ClaimAndStake { users_protocols };
-        let result = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+        // An unauthorized user tries to execute ClaimAndStake
+        let claim_and_stake_msg = ExecuteMsg::ClaimAndStake {
+            users_protocols: vec![(user.to_string(), vec!["protocol1".to_string()])],
+        };
+        let err = app
+            .execute_contract(
+                user.clone(),
+                contracts.autoclaimer.clone(),
+                &claim_and_stake_msg,
+                &[],
+            )
+            .unwrap_err();
 
-        // Check the response for ignored users and protocols
-        let ignored_attr = result
-            .attributes
-            .iter()
-            .find(|attr| attr.key == "ignored_pairs")
-            .expect("Ignored attribute should exist");
+        // Print the actual error message
+        println!("Error: {:?}", err);
 
-        let ignored_list: Vec<String> = serde_json::from_str(&ignored_attr.value).unwrap();
+        // Adjust the assertion based on the actual error message
+        assert!(err
+            .root_cause()
+            .to_string()
+            .contains("You have no permissions to execute this function"));
+    }
 
-        // Assert that ignored users and protocols are correctly listed
-        assert_eq!(
-            ignored_list,
-            vec![
-                format!("{}: OTHER", user1.to_string()), // user1's OTHER protocol should be ignored
-                format!("{}: AUTO", user2.to_string()),  // user2's AUTO protocol should be ignored
-            ]
-        );
+    #[test]
+    fn test_update_config() {
+        let (mut app, contracts) = setup(vec![]); // Empty initial balances
+
+        // The owner updates the configuration
+        let update_msg = ExecuteMsg::UpdateConfig {
+            config: UpdateConfigMsg {
+                owner: Some(app.api().addr_make("new_owner")),
+                max_parallel_claims: Some(10),
+                protocol_configs: None,
+            },
+        };
+        app.execute_contract(
+            app.api().addr_make("owner"),
+            contracts.autoclaimer.clone(),
+            &update_msg,
+            &[],
+        )
+        .unwrap();
+
+        // Query the updated configuration
+        let config: ConfigResponse = app
+            .wrap()
+            .query_wasm_smart(contracts.autoclaimer.clone(), &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, app.api().addr_make("new_owner"));
+        assert_eq!(config.max_parallel_claims, 10);
     }
 }

@@ -4,8 +4,7 @@ use crate::msg::{
     InstantiateMsg, ProtocolConfig, ProtocolSubscriptionData, QueryMsg, UpdateConfigMsg,
 };
 use crate::state::{
-    ExecutionData, CONFIG, PENDING_USER_PROTOCOL, PROTOCOL_CONFIG, SUBSCRIPTIONS,
-    USER_EXECUTION_DATA,
+    Config, ExecutionData, CONFIG, PENDING_USER_PROTOCOL, PROTOCOL_CONFIG, SUBSCRIPTIONS, USER_EXECUTION_DATA
 };
 use common::claim::build_claim_msg;
 use common::common_functions::query_token_balance;
@@ -45,16 +44,26 @@ fn validate_protocols(deps: &DepsMut, protocols: &Vec<String>) -> Result<(), Con
 #[entry_point]
 pub fn instantiate(
     deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
+    _env: Env,
+    _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    let update_msg = UpdateConfigMsg {
-        owner: Some(msg.owner),
-        max_parallel_claims: Some(msg.max_parallel_claims),
-        protocol_configs: Some(msg.protocol_configs),
+    let config = Config {
+        owner: msg.owner,
+        max_parallel_claims: msg.max_parallel_claims,
     };
-    update_config(deps, env, info, update_msg)?;
+
+    // Save the config in the state
+    CONFIG.save(deps.storage, &config)?;
+
+    for protocol_config in msg.protocol_configs {
+        PROTOCOL_CONFIG.save(
+            deps.storage,
+            protocol_config.protocol.as_str(),
+            &protocol_config,
+        )?;
+    }
+
     Ok(Response::new().add_attribute("action", "instantiate"))
 }
 
