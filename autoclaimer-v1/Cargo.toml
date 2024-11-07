@@ -26,7 +26,7 @@ library = []
 
 [package.metadata.scripts]
 optimize = """docker run --rm -v "$(pwd)":/code \
-  -v "/Users/araiczyk/workspace/automations/common":/common \
+  -v ""$(pwd)"/../common":/common \
   --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target \
   --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry \
   cosmwasm/optimizer-arm64:0.16.1
