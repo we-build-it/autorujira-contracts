@@ -1,5 +1,7 @@
 use anybuf::Anybuf;
-use cosmwasm_std::{Addr, AnyMsg, BalanceResponse, BankQuery, Coin, CosmosMsg, Deps, Env, QueryRequest, StdResult, Uint128};
+use cosmwasm_std::{
+    Addr, BalanceResponse, BankQuery, Coin, CosmosMsg, Deps, Env, QueryRequest, StdResult, Uint128,
+};
 
 /// Builds an Authz message to execute a contract on behalf of a user.
 ///
@@ -23,9 +25,9 @@ pub fn build_authz_msg(
 ) -> StdResult<CosmosMsg> {
     // Construct MsgExecuteContract using Anybuf
     let mut execute_contract_buf = Anybuf::new()
-        .append_string(1, &user.to_string())      // sender (field 1)
+        .append_string(1, &user.to_string()) // sender (field 1)
         .append_string(2, &contract_addr.to_string()) // contract (field 2)
-        .append_string(3, &msg_str);              // msg (field 3)
+        .append_string(3, &msg_str); // msg (field 3)
 
     // Add funds to the message if provided
     if !funds.is_empty() {
@@ -33,7 +35,7 @@ pub fn build_authz_msg(
             .iter()
             .map(|fund| {
                 Anybuf::new()
-                    .append_string(1, &fund.denom)        // denom (field 1)
+                    .append_string(1, &fund.denom) // denom (field 1)
                     .append_string(2, &fund.amount.to_string()) // amount (field 2)
             })
             .collect();
@@ -46,19 +48,17 @@ pub fn build_authz_msg(
     // Wrap MsgExecuteContract in an Any message
     let execute_contract_any_buf = Anybuf::new()
         .append_string(1, "/cosmwasm.wasm.v1.MsgExecuteContract") // type_url (field 1)
-        .append_bytes(2, &execute_contract_bytes);                // value (field 2)
+        .append_bytes(2, &execute_contract_bytes); // value (field 2)
 
     // Construct MsgExec using Anybuf
     let msg_exec_buf = Anybuf::new()
         .append_string(1, &env.contract.address.to_string()) // grantee (field 1)
         .append_repeated_message(2, &[execute_contract_any_buf]); // msgs (field 2)
 
-    // Create CosmosMsg::Any
-    let cosmos_msg = CosmosMsg::Any(AnyMsg {
+    let cosmos_msg = CosmosMsg::Stargate {
         type_url: "/cosmos.authz.v1beta1.MsgExec".to_string(),
         value: msg_exec_buf.as_bytes().into(),
-    });
-
+    };
     Ok(cosmos_msg)
 }
 
