@@ -28,5 +28,8 @@ pub struct ExecutionData {
 pub const USER_EXECUTION_DATA: Map<(Addr, String), ExecutionData> = Map::new("user_execution_data");
 
 /// Stores user, protocol, and balance_before for each reply_id.
-pub const PENDING_USER_PROTOCOL: Map<u64, (Addr, String, Uint128)> =
-    Map::new("pending_user_protocol");
+pub const PENDING_CLAIM_AND_STAKE_DATA: Map<u64, (Addr, String, Uint128)> =
+    Map::new("pending_claim_only_data");
+
+pub const PENDING_CLAIM_ONLY_DATA: Map<u64, (String, Addr, Addr)> =
+    Map::new("pending_claim_only_data");

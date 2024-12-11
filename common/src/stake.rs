@@ -1,6 +1,6 @@
 use cosmwasm_std::{Addr, Coin, CosmosMsg, Env, StdResult};
 use serde::{Deserialize, Serialize};
-use crate::{common_functions::build_authz_msg, staking_provider::StakingProvider};
+use crate::{common_functions::{build_authz_msg, AuthzMessageType}, staking_provider::StakingProvider};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -42,7 +42,15 @@ pub fn build_stake_msg(
             }];
 
             // Build the actual message, using a common function or direct construction
-            build_authz_msg(env, user, stake_contract_address, stake_msg_str, funds)
+            build_authz_msg(
+                env,
+                user,
+                AuthzMessageType::ExecuteContract {
+                    contract_addr: stake_contract_address,
+                    msg_str: stake_msg_str,
+                    funds,
+                },
+            )
         }
     }
 }

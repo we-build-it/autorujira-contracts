@@ -31,6 +31,9 @@ pub enum ContractError {
 
     #[error("Unsupported protocol: {protocol}")]
     InvalidProtocol { protocol: String },
+
+    #[error("Unsupported strategy: {strategy}")]
+    InvalidStrategy { strategy: String },
 }
 
 // From<serde_json::Error> impl for ContractError

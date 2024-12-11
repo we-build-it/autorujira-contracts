@@ -4,18 +4,52 @@ use cosmwasm_std::{Addr, Decimal};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Structure for configuring protocols
+/// Common configuration for all protocols
+// Define the old ProtocolConfig struct matching the old data structure
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OldProtocolConfig {
+    pub provider: StakingProvider,
+    pub claim_contract_address: String,
+    pub stake_contract_address: String,
+    pub reward_denom: String,
+    pub fee_percentage: Decimal,
+    pub fee_address: String,
+}
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct ProtocolConfig {
-    pub protocol: String,               // Protocol identifier (e.g., "AUTO", "NAMI")
-    pub provider: StakingProvider,      // Associated staking provider (e.g., DAO_DAO)
-    pub fee_percentage: Decimal,        // Fee percentage (e.g., "0.01" for 1%)
-    pub fee_address: String,            // Address where the fee is sent
-    pub claim_contract_address: String, // Address of the claim contract
-    pub stake_contract_address: String, // Address of the stake contract
-    pub reward_denom: String,           // Denomination of the reward token (e.g., "ukuji")
+    pub protocol: String,        // Protocol identifier (e.g., "AUTO", "MNTA", "FIN")
+    pub fee_percentage: Decimal, // Fee percentage (e.g., "0.01" for 1%)
+    pub fee_address: String,     // Address where the fee is sent
+    pub strategy: ProtocolStrategy, // Specific strategy for the protocol
 }
 
+/// Enum for defining the strategy of a protocol
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(tag = "type", rename_all = "PascalCase")]
+pub enum ProtocolStrategy {
+    /// Strategy for claim and stake (e.g., AUTO, MNTA)
+    ClaimAndStakeDaoDaoCwRewards {
+        provider: StakingProvider, // Associated staking provider (e.g., CW_REWARDS)
+        claim_contract_address: String, // Address of the claim contract
+        stake_contract_address: String, // Address of the stake contract
+        reward_denom: String,      // Denomination of the reward token (e.g., "ukuji")
+    },
+    /// Strategy for claim only (e.g., FIN)
+    ClaimOnlyFIN {
+        supported_markets: Vec<String>, // List of supported market contract addresses
+    },
+}
+
+impl ProtocolStrategy {
+    /// Convert the ProtocolStrategy into a string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProtocolStrategy::ClaimAndStakeDaoDaoCwRewards { .. } => "ClaimAndStakeDaoDaoCwRewards",
+            ProtocolStrategy::ClaimOnlyFIN { .. } => "ClaimOnlyFIN",
+            // Agrega aquí otras estrategias según sea necesario
+        }
+    }
+}
 /// Message used for the initial contract configuration during instantiation
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct InstantiateMsg {
@@ -41,6 +75,10 @@ pub enum ExecuteMsg {
     },
     ClaimAndStake {
         users_protocols: Vec<(String, Vec<String>)>, // List of users and their respective protocols
+    },
+    ClaimOnly {
+        protocol: String,
+        users_contracts: Vec<(String, String)>, // (user_address, contract_address)
     },
     Subscribe {
         protocols: Vec<String>, // Protocols to subscribe to
