@@ -1,5 +1,6 @@
 use cosmwasm_schema::QueryResponses;
-use cosmwasm_std::{Addr};
+use cosmwasm_std::{Addr, Decimal, Uint128};
+use rujira_rs::fin::{Price, Side};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +14,19 @@ pub struct InstantiateMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
-    PlaceOrder { },
+    PlaceOrder { 
+        fin_contract_address: Addr,
+        side: Side,
+        price: Price,
+        amount: Uint128,
+        price_sl: Option<Decimal>,
+        price_tp: Option<Decimal>,
+    },
+    Protect { 
+        fin_contract_address: Addr,
+        side: Side,
+        price: Price,
+    },
 }
 
 /// Enum for defining the available contract queries
