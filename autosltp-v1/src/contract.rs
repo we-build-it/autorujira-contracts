@@ -11,6 +11,8 @@ use crate::state::{
     Config, PoolKey, UserOrder, CONFIG, FIN_CONTRACTS, USER_ORDERS
 };
 
+use rujira_rs::fin::Side;
+
 
 /// Initializes the contract and stores protocol configurations.
 ///
@@ -73,25 +75,49 @@ pub fn execute(
         } => {
             // Ensure the contract is valid
             let denoms = FIN_CONTRACTS.load(deps.storage, &fin_contract_address)?;
+            
+            // Ensure the user sent the correct funds
+            if info.funds.len() != 1 {
+                return Err(StdError::generic_err("Must send exactly one coin"));
+            }
+            if side == Side::Base && info.funds[0].denom != denoms.base() {
+                return Err(StdError::generic_err("Must send base coin"));
+            }
+            if side == Side::Quote && info.funds[0].denom != denoms.quote() {
+                return Err(StdError::generic_err("Must send quote coin"));
+            }
+            if info.funds[0].amount != amount {
+                return Err(StdError::generic_err("Must send the correct amount"));
+            }
 
-            // Check if the user has a previous order at that side and price
             let user_order_key = (
                 info.sender.clone(), 
+                fin_contract_address.clone(),
                 PoolKey::new(side.clone(), price.clone())
             );
+
+            // Check if the user has a previous order at that side and price
             let old_order = USER_ORDERS.may_load(
                 deps.storage, 
                 user_order_key.clone());
+            // For now we only support one order per user per price
+            if old_order.is_ok() {
+                return Err(StdError::generic_err("User already has an order at that price"));
+            }
 
-            // TODO: Ensure funds are OK taking into account old_older
+            // TODO: Allow the user to modify the order amount
+
+            // Save the user order
+            USER_ORDERS.save(
+                deps.storage, 
+                user_order_key.clone(), 
+                &UserOrder {amount, price_sl, price_tp}
+            )?;
 
             // Send Submit Order message to FIN
-            let mut submessages: Vec<SubMsg> = Vec::new();            
-            let mut reply_id = FIN_REPLY_SUBMIT_ORDER;
-            let msg = rujira_rs::fin::ExecuteMsg::Order(vec![(side, price, amount)]);
             let execute_msg = WasmMsg::Execute {
                 contract_addr: fin_contract_address.to_string(),
-                msg: to_json_binary(&msg)?,
+                msg: to_json_binary(&rujira_rs::fin::ExecuteMsg::Order(vec![(side, price, amount)]))?,
                 funds: info.funds,
             };
 
@@ -101,18 +127,11 @@ pub fn execute(
                     .add_attribute("sender", info.sender.to_string()),
             );
             
-            // TODO: Is this really necessary?
-            response = response.add_submessage(SubMsg::reply_on_success(execute_msg, reply_id.clone()));
-
-            USER_ORDERS.save(
-                deps.storage, 
-                user_order_key.clone(), 
-                &UserOrder {amount, price_sl, price_tp}
-            )?;
+            response = response.add_submessage(SubMsg::new(execute_msg));
         
-            // create attributes, events, and fund transfeer for sender
             return Ok(response);          
         }
+
         ExecuteMsg::Protect { 
             fin_contract_address, 
             side, 
@@ -124,6 +143,7 @@ pub fn execute(
             // Check if the user has a previous order at that side and price
             let user_order_key = (
                 info.sender.clone(), 
+                fin_contract_address.clone(),
                 PoolKey::new(side.clone(), price.clone())
             );
             let user_order = USER_ORDERS.load(
@@ -134,18 +154,19 @@ pub fn execute(
 
             if (user_order.price_sl.is_some() && user_order.price_sl.unwrap() >= current_price) ||
                (user_order.price_tp.is_some() && user_order.price_tp.unwrap() <= current_price) {
-                // First Claim the order
-                let mut reply_id = FIN_REPLY_SUBMIT_CLAIM_ORDER;
-
+                
+                // Claim the order
                 let msg_claim = rujira_rs::fin::ExecuteMsg::Order(vec![(side, price, Uint128::zero())]);
                 let execute_msg_claim = WasmMsg::Execute {
                     contract_addr: fin_contract_address.to_string(),
                     msg: to_json_binary(&msg_claim)?,
                     funds: vec![Coin::new(Uint128::zero(), denoms.quote())],
                 };
+
                 // TODO: take claimed funds from previous execution
                 let claimed_funds = vec![Coin::new(Uint128::zero(), denoms.quote())];
 
+                // Swap the funds
                 let msg_swap = rujira_rs::fin::ExecuteMsg::Swap {
                     min_return: None,
                     to: None,
@@ -162,6 +183,10 @@ pub fn execute(
                         .add_attribute("action", "claim_order")
                         .add_attribute("sender", info.sender.to_string()),
                 );
+
+                response = response.add_submessage(SubMsg::new(execute_msg_claim));
+                response = response.add_submessage(SubMsg::new(execute_msg_swap));
+
                 return Ok(response)
             }
             return Err(StdError::generic_err("SL/TP not reached yet"));
@@ -175,7 +200,7 @@ fn load_oracle_price(_base: &str, _quote: &str) -> StdResult<Decimal> {
     // let a = query::Pool::load(q, &config.oracles[0])?.asset_tor_price;
     // let b = query::Pool::load(q, &config.oracles[1])?.asset_tor_price;
     // Ok(a / b)
-    Ok(Decimal::zero())
+    Ok(Decimal::one())
 }
 
 pub fn reply(_deps: DepsMut, _env: Env, reply: Reply) -> StdResult<Response> {

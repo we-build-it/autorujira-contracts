@@ -18,7 +18,9 @@ pub struct UserOrder {
     pub price_sl: Option<Decimal>,
     pub price_tp: Option<Decimal>,
 }
-pub const USER_ORDERS: Map<(Addr, PoolKey), UserOrder> = Map::new("user_orders");
+// Map from (Owner Address, Contract Address, PoolKey) to UserOrder
+// TODO: Decide if we should use a smaller Contract id instead of the full address
+pub const USER_ORDERS: Map<(Addr, Addr, PoolKey), UserOrder> = Map::new("user_orders");
 
 
 // ------------------------------------------------------------
