@@ -14,6 +14,10 @@ pub struct InstantiateMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
+    AddMarket {
+        fin_contract_address: Addr,
+        denoms: rujira_rs::fin::Denoms,
+    },
     PlaceOrder { 
         fin_contract_address: Addr,
         side: Side,
@@ -22,10 +26,11 @@ pub enum ExecuteMsg {
         price_sl: Option<Decimal>,
         price_tp: Option<Decimal>,
     },
-    Protect { 
+    ExecuteSlTp { 
         fin_contract_address: Addr,
         side: Side,
         price: Price,
+        claim_amount: Uint128
     },
 }
 

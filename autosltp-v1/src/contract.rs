@@ -42,9 +42,7 @@ pub fn instantiate(
     Ok(Response::new().add_attribute("action", "instantiate"))
 }
 
-pub const FIN_REPLY_SUBMIT_ORDER: u64 = 200;
-pub const FIN_REPLY_SUBMIT_CLAIM_ORDER: u64 = 201;
-pub const FIN_REPLY_SUBMIT_SWAP_SLTP: u64 = 202;
+pub const FIN_REPLY_SWAP_SLTP: u64 = 200;
 
 /// Executes contract logic based on the message received.
 ///
@@ -65,6 +63,18 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> StdResult<Response> {
     match msg {
+        ExecuteMsg::AddMarket { 
+            fin_contract_address, 
+            denoms 
+        } => {
+            let config = CONFIG.load(deps.storage)?;
+            if info.sender != config.owner {
+                return Err(StdError::generic_err("Unauthorized"));
+            }
+            FIN_CONTRACTS.save(deps.storage, &fin_contract_address, &denoms)?;
+            Ok(Response::new())
+        },
+
         ExecuteMsg::PlaceOrder { 
             fin_contract_address,
             side, // TODO: Should we ask for the side or should we infer it from the funds?
@@ -132,10 +142,11 @@ pub fn execute(
             return Ok(response);          
         }
 
-        ExecuteMsg::Protect { 
+        ExecuteMsg::ExecuteSlTp { 
             fin_contract_address, 
             side, 
-            price 
+            price,
+            claim_amount
         } => {
             // Ensure the contract is valid
             let denoms = FIN_CONTRACTS.load(deps.storage, &fin_contract_address)?;
@@ -156,15 +167,16 @@ pub fn execute(
                (user_order.price_tp.is_some() && user_order.price_tp.unwrap() <= current_price) {
                 
                 // Claim the order
-                let msg_claim = rujira_rs::fin::ExecuteMsg::Order(vec![(side, price, Uint128::zero())]);
+                let msg_claim = rujira_rs::fin::ExecuteMsg::Order(vec![(side.clone(), price.clone(), Uint128::zero())]);
                 let execute_msg_claim = WasmMsg::Execute {
                     contract_addr: fin_contract_address.to_string(),
                     msg: to_json_binary(&msg_claim)?,
                     funds: vec![Coin::new(Uint128::zero(), denoms.quote())],
                 };
 
-                // TODO: take claimed funds from previous execution
-                let claimed_funds = vec![Coin::new(Uint128::zero(), denoms.quote())];
+                // NOTE: We're receiving the claiming amount to optimize contract access, however we could add one more roundtrip to the trade contract to get the exect available amount
+                let claiming_denom = if side == Side::Base { denoms.quote() } else { denoms.base() };
+                let claiming_funds = vec![Coin::new(claim_amount.clone(), claiming_denom)];
 
                 // Swap the funds
                 let msg_swap = rujira_rs::fin::ExecuteMsg::Swap {
@@ -175,7 +187,7 @@ pub fn execute(
                 let execute_msg_swap = WasmMsg::Execute {
                     contract_addr: fin_contract_address.to_string(),
                     msg: to_json_binary(&msg_swap)?,
-                    funds: claimed_funds,
+                    funds: claiming_funds,
                 };
     
                 let mut response = Response::new().add_event(
@@ -184,13 +196,13 @@ pub fn execute(
                         .add_attribute("sender", info.sender.to_string()),
                 );
 
-                response = response.add_submessage(SubMsg::new(execute_msg_claim));
-                response = response.add_submessage(SubMsg::new(execute_msg_swap));
+                response = response.add_submessage(SubMsg::reply_never(execute_msg_claim));
+                response = response.add_submessage(SubMsg::reply_on_success(execute_msg_swap, FIN_REPLY_SWAP_SLTP));
 
                 return Ok(response)
             }
             return Err(StdError::generic_err("SL/TP not reached yet"));
-        },      
+        },
 
     }
 }
@@ -205,7 +217,8 @@ fn load_oracle_price(_base: &str, _quote: &str) -> StdResult<Decimal> {
 
 pub fn reply(_deps: DepsMut, _env: Env, reply: Reply) -> StdResult<Response> {
     match reply.id {
-        id if id == FIN_REPLY_SUBMIT_CLAIM_ORDER => {
+        id if id == FIN_REPLY_SWAP_SLTP => {
+            // TODO: We need to apply fees and forward the remaining funds to the user
             Ok(Response::new())
         }
         // --- error

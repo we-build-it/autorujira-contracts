@@ -1,8 +1,6 @@
 pub mod msg;
 pub mod state;
 pub mod contract;
-pub mod fin;
-pub mod event_utils;
 
 use cosmwasm_std::{
     entry_point, Deps, DepsMut, Env, MessageInfo, Response, StdResult, Binary, Reply
