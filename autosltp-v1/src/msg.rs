@@ -27,6 +27,7 @@ pub enum ExecuteMsg {
         price_tp: Option<Decimal>,
     },
     ExecuteSlTp { 
+        user_address: Addr,
         fin_contract_address: Addr,
         side: Side,
         price: Price,

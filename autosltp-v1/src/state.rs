@@ -22,6 +22,8 @@ pub struct UserOrder {
 // TODO: Decide if we should use a smaller Contract id instead of the full address
 pub const USER_ORDERS: Map<(Addr, Addr, PoolKey), UserOrder> = Map::new("user_orders");
 
+pub const IN_FLIGHT_USER: Item<Addr> = Item::new("in_flight_user");
+
 
 // ------------------------------------------------------------
 // Code take from rujira-fin implementation to use PoolKey as the USER_ORDERS key

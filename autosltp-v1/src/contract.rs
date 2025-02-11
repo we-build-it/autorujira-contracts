@@ -1,4 +1,4 @@
-use cosmwasm_std::{to_json_binary, Binary, Coin, Decimal, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg, Uint128, WasmMsg};
+use cosmwasm_std::{to_json_binary, Addr, BankMsg, Binary, Coin, Decimal, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError, StdResult, SubMsg, SubMsgResponse, SubMsgResult, Uint128, WasmMsg};
 
 use crate::msg::{
     InstantiateMsg,
@@ -8,7 +8,7 @@ use crate::msg::{
 };
 
 use crate::state::{
-    Config, PoolKey, UserOrder, CONFIG, FIN_CONTRACTS, USER_ORDERS
+    Config, PoolKey, UserOrder, CONFIG, FIN_CONTRACTS, IN_FLIGHT_USER, USER_ORDERS
 };
 
 use rujira_rs::fin::Side;
@@ -143,6 +143,7 @@ pub fn execute(
         }
 
         ExecuteMsg::ExecuteSlTp { 
+            user_address,
             fin_contract_address, 
             side, 
             price,
@@ -153,7 +154,7 @@ pub fn execute(
 
             // Check if the user has a previous order at that side and price
             let user_order_key = (
-                info.sender.clone(), 
+                user_address.clone(), 
                 fin_contract_address.clone(),
                 PoolKey::new(side.clone(), price.clone())
             );
@@ -199,6 +200,9 @@ pub fn execute(
                 response = response.add_submessage(SubMsg::reply_never(execute_msg_claim));
                 response = response.add_submessage(SubMsg::reply_on_success(execute_msg_swap, FIN_REPLY_SWAP_SLTP));
 
+                // Save the user address to be able to send the funds in the reply
+                IN_FLIGHT_USER.save(deps.storage, &user_address)?;
+
                 return Ok(response)
             }
             return Err(StdError::generic_err("SL/TP not reached yet"));
@@ -215,11 +219,51 @@ fn load_oracle_price(_base: &str, _quote: &str) -> StdResult<Decimal> {
     Ok(Decimal::one())
 }
 
-pub fn reply(_deps: DepsMut, _env: Env, reply: Reply) -> StdResult<Response> {
+fn extract_received_tokens(
+    env: Env,
+    msg: SubMsgResult,
+) -> StdResult<Coin> {
+    let mut received_coin = Coin::default();
+
+    if let SubMsgResult::Ok(SubMsgResponse { events, .. }) = msg {
+        // Find the event that contains the amount of tokens received
+        for event in events {
+            if event.ty == "coin_received" { // Event must be coin_received
+                let mut event_received_coin: Coin = Coin::default();
+                let mut event_receiver_ok = false;
+                for attr in event.attributes {
+                    if attr.key == "receiver" && attr.value == env.contract.address.as_str(){ // The receiver must be this contract
+                        event_receiver_ok = true;
+                    } else if attr.key == "amount" {
+                        event_received_coin = attr.value.parse()?;                        
+                    }
+                }
+                if event_receiver_ok {
+                    received_coin = event_received_coin;
+                }
+            }
+        }
+    }
+
+    Ok(received_coin)
+}
+
+pub fn reply(deps: DepsMut, _env: Env, reply: Reply) -> StdResult<Response> {
     match reply.id {
         id if id == FIN_REPLY_SWAP_SLTP => {
-            // TODO: We need to apply fees and forward the remaining funds to the user
-            Ok(Response::new())
+            let received_coin = extract_received_tokens(_env, reply.result)?;
+            if (received_coin.amount > Uint128::zero()) {
+                let user_address = IN_FLIGHT_USER.load(deps.storage)?;
+                IN_FLIGHT_USER.save(deps.storage, &Addr::unchecked(""))?;
+                // TODO: Calculate fees
+                let fees: Uint128 = Uint128::new(1);
+                let user_amount = received_coin.amount - fees;
+                return Ok(Response::new().add_message(BankMsg::Send {
+                    to_address: user_address.to_string(),
+                    amount: vec![Coin::new(user_amount, received_coin.denom)],
+                }));
+            }
+            return Err(StdError::generic_err("no received coins".to_string()))
         }
         // --- error
         _ => {
