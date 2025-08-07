@@ -93,12 +93,10 @@ undistributed_revenue: "0"
 
 #### `account_bond`
 - 🔎 **What:** Total TCY deposited in *non-compounding* mode (account staking).
-- ⚠️ **Note:** If only using the official UI, this will likely be zero.
 
 #### `assigned_revenue`
 - 🔎 **What:** Amount of TCY rewards already assigned to users who deposited via `AccountMsg::Bond` (non-compounding mode).
 - 📌 **Note:** This tracks rewards reserved for account bonders (non-compounding), not for `sTCY` holders.
-- ⚠️ **If you're only supporting the auto-compound flow (as recommended), this will remain zero and can be ignored in the UI.
 
 #### `liquid_bond_shares`
 - 🔎 **What:** Total `sTCY` tokens minted (i.e., shares in the pool).
